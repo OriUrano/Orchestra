@@ -99,11 +99,3 @@ def should_run_automation(now: datetime = None) -> bool:
     return mode != "off"
 
 
-if __name__ == "__main__":
-    # Test the time utilities
-    now = datetime.now()
-    print(f"Current time: {now}")
-    print(f"Work mode: {get_work_mode(now)}")
-    print(f"Is work hours: {is_work_hours(now)}")
-    print(f"Should run automation: {should_run_automation(now)}")
-    print(f"Next work period: {get_next_work_period(now)}")

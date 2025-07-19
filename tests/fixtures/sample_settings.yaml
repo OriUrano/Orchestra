@@ -1,0 +1,6 @@
+settings:
+  max_daily_tokens: 100000
+  max_daily_requests: 1000
+  workday_max_repos: 2
+  log_level: INFO
+  claude_code_enabled: true

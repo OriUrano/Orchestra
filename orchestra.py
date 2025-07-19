@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from usage_tracker import UsageTracker
 from utils.time_utils import get_work_mode, should_run_automation
 from mode_executors import get_executor, RepoConfig
-from claude_code_sdk import claude_code
+from claude_code_sdk import query as claude_code
 
 
 class Orchestra:
@@ -190,7 +190,7 @@ class Orchestra:
                         continue
                     
                     # Send task to Claude Code
-                    response = claude_code.query(
+                    response = claude_code(
                         task['prompt'],
                         cwd=repo_config.path
                     )
@@ -230,7 +230,7 @@ class Orchestra:
                     continue
                 
                 # Send worknight prompt to Claude Code
-                response = claude_code.query(
+                response = claude_code(
                     repo_result['prompt'],
                     cwd=repo_config.path
                 )

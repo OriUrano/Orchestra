@@ -272,18 +272,3 @@ def log_errors(error_type: str = "unknown"):
     return decorator
 
 
-if __name__ == "__main__":
-    # Test logging setup
-    logger = configure_logging("DEBUG")
-    
-    logger.log_cycle_start("workday", "normal")
-    logger.log_repo_processing("test-repo", "workday", "completed")
-    logger.log_github_operation("pr_list", "test-repo", True, "Found 3 PRs")
-    logger.log_usage_status({
-        "total_tokens": 15000,
-        "requests": 25,
-        "timestamp": datetime.now().isoformat()
-    })
-    logger.log_cycle_end("workday", 45.2, "completed", {"results": {"test-repo": {"tasks": []}}})
-    
-    print("Logging test completed. Check logs/ directory for output.")

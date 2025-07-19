@@ -64,6 +64,10 @@ class UsageTracker:
                             
                             timestamp = datetime.fromisoformat(timestamp_str)
                             
+                            # Convert to naive datetime if timezone-aware
+                            if timestamp.tzinfo is not None:
+                                timestamp = timestamp.replace(tzinfo=None)
+                            
                             # Only count usage since the specified time
                             if timestamp < since:
                                 continue
@@ -122,11 +126,3 @@ class UsageTracker:
             "timestamp": datetime.now().isoformat()
         }
 
-
-if __name__ == "__main__":
-    # Test the usage tracker
-    tracker = UsageTracker()
-    usage = tracker.get_current_usage()
-    print(f"Current usage: {usage}")
-    print(f"Status: {tracker.check_limits()}")
-    print(f"Summary: {tracker.get_usage_summary()}")

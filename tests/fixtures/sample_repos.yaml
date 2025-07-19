@@ -1,0 +1,17 @@
+repositories:
+  - name: test-repo-1
+    path: /tmp/test-repo-1
+    priority: high
+    watch_branches:
+      - main
+      - develop
+  - name: test-repo-2
+    path: /tmp/test-repo-2
+    priority: medium
+    watch_branches:
+      - main
+  - name: test-repo-3
+    path: /tmp/test-repo-3
+    priority: low
+    watch_branches:
+      - main

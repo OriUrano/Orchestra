@@ -298,18 +298,3 @@ def get_executor(mode: str, usage_tracker: UsageTracker) -> BaseExecutor:
     return executor_class(usage_tracker)
 
 
-if __name__ == "__main__":
-    # Test the executors
-    from usage_tracker import UsageTracker
-    
-    usage_tracker = UsageTracker()
-    
-    # Test repo config
-    test_repos = [
-        RepoConfig("test-repo", "/tmp", "high", ["main"]),
-    ]
-    
-    # Test workday executor
-    workday_executor = get_executor("workday", usage_tracker)
-    result = workday_executor.execute(test_repos)
-    print(f"Workday result: {result}")

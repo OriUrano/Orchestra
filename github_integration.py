@@ -266,23 +266,3 @@ class GitHubIntegration:
         }
 
 
-if __name__ == "__main__":
-    # Test GitHub integration
-    import os
-    
-    # Test with current directory
-    github = GitHubIntegration(os.getcwd())
-    
-    print("Testing GitHub integration...")
-    try:
-        pending = github.get_pending_review_prs()
-        print(f"Pending reviews: {len(pending)}")
-        
-        my_prs = github.get_my_open_prs()
-        print(f"My open PRs: {len(my_prs)}")
-        
-        issues = github.get_assigned_issues()
-        print(f"Assigned issues: {len(issues)}")
-        
-    except Exception as e:
-        print(f"Error testing GitHub integration: {e}")
