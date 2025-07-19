@@ -1,0 +1,19 @@
+# Orchestra system settings
+
+settings:
+  # Claude Code usage limits (adjust based on your subscription)
+  max_daily_tokens: 800000      # Leave buffer from actual limit
+  max_daily_requests: 8000      # Conservative request limit
+  
+  # Workday mode settings
+  workday_max_repos: 3          # Limit repos processed in workday mode
+  
+  # System settings
+  log_level: "INFO"             # DEBUG, INFO, WARNING, ERROR
+  claude_code_enabled: true     # Set to false to disable Claude Code calls
+  
+  # GitHub integration settings
+  github_timeout: 30            # Timeout for gh commands in seconds
+  
+  # Weekend monitoring settings
+  weekend_high_priority_only: true  # Only monitor high-priority repos on weekends

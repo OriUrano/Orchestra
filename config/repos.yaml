@@ -1,0 +1,24 @@
+# Repository configuration for Orchestra
+# Add your repositories here
+
+repositories:
+  # Example repository configuration
+  - name: "example-repo"
+    path: "~/projects/example-repo"
+    priority: "high"  # high, medium, low
+    watch_branches:
+      - "main"
+      - "develop"
+  
+  # Add more repositories as needed
+  # - name: "backend-api"
+  #   path: "~/projects/backend"
+  #   priority: "medium"
+  #   watch_branches:
+  #     - "main"
+  
+  # - name: "frontend-app"
+  #   path: "~/projects/frontend"
+  #   priority: "low"
+  #   watch_branches:
+  #     - "main"
