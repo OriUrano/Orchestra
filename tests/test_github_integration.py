@@ -557,7 +557,9 @@ class TestGitHubIntegrationIntegrationScenarios:
             ]),
             # repo_status calls (branches, then commits)
             json.dumps([{"name": "main"}, {"name": "feature-branch"}]),
-            json.dumps([{"sha": "abc123", "message": "Recent commit"}])
+            json.dumps([{"sha": "abc123", "message": "Recent commit"}]),
+            # get_all_branches call (new in enhanced version)
+            json.dumps([{"name": "main"}, {"name": "feature-branch"}])
         ]
         
         mock_run_command.side_effect = mock_responses
@@ -581,5 +583,370 @@ class TestGitHubIntegrationIntegrationScenarios:
         assert len(data["repo_status"]["branches"]) == 2
         assert len(data["repo_status"]["recent_commits"]) == 1
         
-        # Verify correct number of gh command calls
-        assert mock_run_command.call_count == 5
+        # Check that branches data is present (may be empty due to git command failure in test)
+        assert "branches" in data
+        
+        # Verify correct number of gh command calls (updated for enhanced version)
+        assert mock_run_command.call_count == 6  # 5 original + 1 from get_all_branches
+
+
+class TestNewGitHubIntegrationFeatures:
+    """Test the new enhanced GitHub integration features."""
+    
+    @patch('subprocess.run')
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_get_all_branches_success(self, mock_gh_command, mock_subprocess):
+        # Mock gh api call for remote branches
+        mock_gh_command.return_value = json.dumps([
+            {"name": "main"}, {"name": "develop"}
+        ])
+        
+        # Mock git branch -vv output
+        mock_subprocess.return_value = Mock(
+            stdout="* main 1234567 [origin/main] Latest commit\n  feature-branch abcdefg [origin/feature-branch: ahead 2, behind 1] Feature work\n",
+            returncode=0
+        )
+        
+        github = GitHubIntegration("/tmp/test")
+        branches = github.get_all_branches()
+        
+        assert len(branches) == 2
+        assert branches[0].name == "main"
+        assert branches[0].current == True
+        assert branches[0].ahead_count == 0
+        assert branches[0].behind_count == 0
+        
+        assert branches[1].name == "feature-branch"
+        assert branches[1].current == False
+        assert branches[1].ahead_count == 2
+        assert branches[1].behind_count == 1
+        assert branches[1].needs_rebase == True
+    
+    @patch('subprocess.run')
+    def test_rebase_branch_success(self, mock_subprocess):
+        # Mock successful rebase
+        mock_subprocess.side_effect = [
+            Mock(returncode=0),  # git fetch
+            Mock(stdout="", returncode=0),  # git status --porcelain
+            Mock(returncode=0),  # git checkout
+            Mock(returncode=0, stderr="")  # git rebase
+        ]
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.rebase_branch("feature-branch")
+        
+        assert result["success"] == True
+        assert "Successfully rebased" in result["message"]
+    
+    @patch('subprocess.run')
+    def test_rebase_branch_with_conflicts(self, mock_subprocess):
+        # Mock rebase with conflicts
+        mock_subprocess.side_effect = [
+            Mock(returncode=0),  # git fetch
+            Mock(stdout="", returncode=0),  # git status --porcelain
+            Mock(returncode=0),  # git checkout
+            Mock(returncode=1, stderr="CONFLICT (content): Merge conflict in file.txt"),  # git rebase
+            Mock(returncode=0)  # git rebase --abort
+        ]
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.rebase_branch("feature-branch")
+        
+        assert result["success"] == False
+        assert result["error"] == "Merge conflicts detected"
+        assert result["action_needed"] == "manual_resolution"
+    
+    @patch('subprocess.run')
+    def test_rebase_branch_uncommitted_changes(self, mock_subprocess):
+        # Mock uncommitted changes
+        mock_subprocess.side_effect = [
+            Mock(returncode=0),  # git fetch
+            Mock(stdout="M modified_file.py\n", returncode=0),  # git status --porcelain
+        ]
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.rebase_branch("feature-branch")
+        
+        assert result["success"] == False
+        assert result["error"] == "Uncommitted changes present"
+        assert result["action_needed"] == "commit_or_stash"
+    
+    @patch('subprocess.run')
+    def test_get_commits_since_success(self, mock_subprocess):
+        # Mock git log output
+        mock_subprocess.return_value = Mock(
+            stdout="abc123|Fix bug in authentication|John Doe|2024-01-01 10:00:00 +0000|\ndef456|Add new feature|Jane Smith|2024-01-01 09:00:00 +0000|\n",
+            returncode=0
+        )
+        
+        github = GitHubIntegration("/tmp/test")
+        commits = github.get_commits_since("main", "2024-01-01")
+        
+        assert len(commits) == 2
+        assert commits[0].sha == "abc123"
+        assert commits[0].message == "Fix bug in authentication"
+        assert commits[0].author == "John Doe"
+        assert commits[1].sha == "def456"
+        assert commits[1].message == "Add new feature"
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_create_pr_success(self, mock_gh_command):
+        mock_gh_command.return_value = "https://github.com/test/test/pull/123\nPR created successfully"
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.create_pr("feature-branch", "New Feature", "This adds a new feature", "main")
+        
+        assert result["success"] == True
+        assert result["pr_number"] == 123
+        assert result["pr_url"] == "https://github.com/test/test/pull/123"
+        
+        mock_gh_command.assert_called_once_with([
+            'pr', 'create',
+            '--title', 'New Feature',
+            '--body', 'This adds a new feature',
+            '--base', 'main',
+            '--head', 'feature-branch'
+        ])
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_create_pr_draft(self, mock_gh_command):
+        mock_gh_command.return_value = "https://github.com/test/test/pull/456\nDraft PR created"
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.create_pr("draft-branch", "Draft Feature", "Work in progress", draft=True)
+        
+        assert result["success"] == True
+        assert result["pr_number"] == 456
+        
+        # Verify draft flag was included
+        call_args = mock_gh_command.call_args[0][0]
+        assert '--draft' in call_args
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_read_file_success(self, mock_gh_command):
+        import base64
+        content = "# README\nThis is a test file"
+        encoded_content = base64.b64encode(content.encode('utf-8')).decode('utf-8')
+        mock_gh_command.return_value = f'"{encoded_content}"'
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.read_file("README.md")
+        
+        assert result["success"] == True
+        assert result["content"] == content
+        assert result["path"] == "README.md"
+        
+        mock_gh_command.assert_called_once_with([
+            'api', '/repos/:owner/:repo/contents/README.md',
+            '--jq', '.content',
+            '-H', 'ref=main'
+        ])
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_read_file_not_found(self, mock_gh_command):
+        mock_gh_command.return_value = ""
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.read_file("nonexistent.txt")
+        
+        assert result["success"] == False
+        assert "File not found" in result["error"]
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    @patch.object(GitHubIntegration, 'read_file')
+    def test_write_file_new(self, mock_read_file, mock_gh_command):
+        # Mock file doesn't exist
+        mock_read_file.return_value = {"success": False}
+        mock_gh_command.side_effect = [
+            Exception("File not found"),  # First call for SHA
+            ""  # Second call for actual write
+        ]
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.write_file("new_file.txt", "New content", "Add new file")
+        
+        assert result["success"] == True
+        assert "Successfully updated" in result["message"]
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_get_dependency_files_success(self, mock_gh_command):
+        # Mock reading multiple dependency files
+        import base64
+        
+        package_json = '{"name": "test", "dependencies": {}}'
+        requirements_txt = "requests==2.28.0\nflask==2.2.0"
+        
+        def mock_read_responses(args):
+            if 'package.json' in args[1]:
+                return f'"{base64.b64encode(package_json.encode()).decode()}"'
+            elif 'requirements.txt' in args[1]:
+                return f'"{base64.b64encode(requirements_txt.encode()).decode()}"'
+            else:
+                raise Exception("File not found")
+        
+        mock_gh_command.side_effect = mock_read_responses
+        
+        github = GitHubIntegration("/tmp/test")
+        files = github.get_dependency_files()
+        
+        assert "package.json" in files
+        assert "requirements.txt" in files
+        assert files["package.json"]["content"] == package_json
+        assert files["requirements.txt"]["content"] == requirements_txt
+        assert "npm/yarn projects" in files["package.json"]["description"]
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_check_vulnerabilities_success(self, mock_gh_command):
+        # Mock security advisories and vulnerability alerts
+        advisories = [{"id": "GHSA-1234", "severity": "HIGH"}]
+        vulnerabilities = [{"id": "CVE-2024-1234", "severity": "MEDIUM"}]
+        
+        mock_gh_command.side_effect = [
+            json.dumps(advisories),
+            json.dumps(vulnerabilities)
+        ]
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.check_vulnerabilities()
+        
+        assert result["total_issues"] == 2
+        assert len(result["security_advisories"]) == 1
+        assert len(result["vulnerability_alerts"]) == 1
+        assert result["security_advisories"][0]["severity"] == "HIGH"
+    
+    @patch.object(GitHubIntegration, '_run_gh_command')
+    def test_check_vulnerabilities_error(self, mock_gh_command, capsys):
+        mock_gh_command.side_effect = Exception("API Error")
+        
+        github = GitHubIntegration("/tmp/test")
+        result = github.check_vulnerabilities()
+        
+        assert result["total_issues"] == 0
+        assert result["security_advisories"] == []
+        assert result["vulnerability_alerts"] == []
+        assert "error" in result
+        
+        captured = capsys.readouterr()
+        assert "Error checking vulnerabilities" in captured.out
+    
+    @patch.object(GitHubIntegration, 'get_dependency_files')
+    @patch.object(GitHubIntegration, 'get_security_files')
+    @patch.object(GitHubIntegration, 'check_vulnerabilities')
+    @patch.object(GitHubIntegration, 'get_all_branches')
+    @patch.object(GitHubIntegration, 'get_my_open_prs')
+    def test_gather_weekend_data(self, mock_my_prs, mock_branches, mock_vulns, mock_security_files, mock_dep_files):
+        # Mock all weekend data gathering methods
+        mock_dep_files.return_value = {"package.json": {"description": "npm project"}}
+        mock_security_files.return_value = {"CLAUDE.md": {"description": "Claude instructions"}}
+        mock_vulns.return_value = {"total_issues": 5}
+        mock_branches.return_value = [Mock()]
+        mock_my_prs.return_value = [Mock(), Mock()]
+        
+        github = GitHubIntegration("/tmp/test")
+        data = github.gather_weekend_data()
+        
+        assert "dependency_files" in data
+        assert "security_files" in data  
+        assert "vulnerabilities" in data
+        assert "branches" in data
+        assert "my_prs" in data
+        
+        assert len(data["dependency_files"]) == 1
+        assert data["vulnerabilities"]["total_issues"] == 5
+        assert len(data["my_prs"]) == 2
+        
+        # Verify all methods called
+        mock_dep_files.assert_called_once()
+        mock_security_files.assert_called_once()
+        mock_vulns.assert_called_once()
+        mock_branches.assert_called_once()
+        mock_my_prs.assert_called_once()
+
+
+class TestBranchDataClass:
+    """Test the new Branch dataclass."""
+    
+    def test_branch_creation(self):
+        from github_integration import Branch
+        
+        branch = Branch(
+            name="feature-branch",
+            current=False,
+            remote="origin",
+            ahead_count=3,
+            behind_count=2,
+            last_commit="abc123",
+            last_commit_date="2024-01-01"
+        )
+        
+        assert branch.name == "feature-branch"
+        assert branch.current == False
+        assert branch.remote == "origin"
+        assert branch.ahead_count == 3
+        assert branch.behind_count == 2
+        assert branch.needs_rebase == True  # behind_count > 0
+        assert branch.can_push == True     # ahead_count > 0
+    
+    def test_branch_up_to_date(self):
+        from github_integration import Branch
+        
+        branch = Branch(
+            name="main",
+            current=True,
+            remote="origin",
+            ahead_count=0,
+            behind_count=0
+        )
+        
+        assert branch.needs_rebase == False
+        assert branch.can_push == False
+    
+    def test_branch_ahead_only(self):
+        from github_integration import Branch
+        
+        branch = Branch(
+            name="feature",
+            current=True,
+            remote="origin",
+            ahead_count=2,
+            behind_count=0
+        )
+        
+        assert branch.needs_rebase == False
+        assert branch.can_push == True
+
+
+class TestCommitDataClass:
+    """Test the new Commit dataclass."""
+    
+    def test_commit_creation(self):
+        from github_integration import Commit
+        
+        commit = Commit(
+            sha="abc123",
+            message="Fix authentication bug",
+            author="John Doe",
+            date="2024-01-01T10:00:00Z",
+            url="https://github.com/test/test/commit/abc123",
+            files_changed=["auth.py", "tests/test_auth.py"]
+        )
+        
+        assert commit.sha == "abc123"
+        assert commit.message == "Fix authentication bug"
+        assert commit.author == "John Doe"
+        assert commit.date == "2024-01-01T10:00:00Z"
+        assert len(commit.files_changed) == 2
+        assert "auth.py" in commit.files_changed
+    
+    def test_commit_default_files(self):
+        from github_integration import Commit
+        
+        commit = Commit(
+            sha="def456",
+            message="Update documentation",
+            author="Jane Smith",
+            date="2024-01-01T11:00:00Z",
+            url="https://github.com/test/test/commit/def456"
+        )
+        
+        assert commit.files_changed == []

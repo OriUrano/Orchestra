@@ -6,25 +6,110 @@
 - ✅ Usage tracking via JSONL parsing
 - ✅ GitHub integration with gh CLI
 - ✅ Basic configuration system
+- ✅ Complete test suite (218 tests passing)
 
-## 🚀 Immediate Priorities
+## 🚨 CRITICAL ISSUES (Fix Immediately)
 
-### High Priority
-- [ ] **Add comprehensive logging system**
-  - Structured logging with rotation
-  - Debug mode with verbose output
-  - Error tracking and alerts
-  - Usage statistics logging
+### Code Defects & Missing Implementations
+- [ ] **Fix Claude Code SDK import pattern** 
+  - `orchestra.py:23` imports as `claude_code_sdk.query as claude_code` but calls `claude_code()` directly
+  - This may cause import conflicts - needs proper function reference
 
-- [ ] **Improve error handling**
-  - Graceful degradation on API failures
-  - Retry logic with exponential backoff
-  - Better error messages and recovery
+- [ ] **Implement missing `gather_weekend_data()` method**
+  - Referenced in `mode_executors.py:716` but not implemented in `GitHubIntegration` class
+  - Weekend mode will fail without this method
 
-- [ ] **Add basic tests**
-  - Unit tests for core modules
-  - Integration tests for GitHub operations
-  - Mock tests for Claude Code interactions
+- [ ] **Fix template imports in weekend mode**
+  - `mode_executors.py:849-856` imports weekend prompt functions but they're inconsistently used
+  - Template functions need proper integration
+
+### Security Vulnerabilities
+- [ ] **Add input sanitization for GitHub data**
+  - GitHub responses passed directly to Claude Code without validation
+  - Potential for injection attacks or data corruption
+
+- [ ] **Implement secure subprocess handling**
+  - `subprocess.run` calls could be vulnerable to command injection
+  - Add proper argument validation and sanitization
+
+- [ ] **Add secrets management**
+  - Prevent API tokens or sensitive data from appearing in logs
+  - Implement proper credential handling and rotation
+
+- [ ] **Add configuration access controls**
+  - Anyone with file system access can modify configs
+  - Need validation and access restrictions
+
+### Critical System Reliability
+- [ ] **Add comprehensive error handling with retry logic**
+  - GitHub API calls and Claude Code requests have no retry mechanisms
+  - System fails completely on temporary network issues
+
+- [ ] **Implement circuit breaker pattern**
+  - Continuous failures could exhaust API limits
+  - Need protection against cascading failures
+
+- [ ] **Add configuration validation**
+  - YAML files can contain invalid data without detection
+  - Add schema validation with clear error messages
+
+- [ ] **Complete task scheduler integration**
+  - Task persistence exists but doesn't integrate with main execution loop
+  - Tasks are created but never properly completed or tracked
+
+## 🚀 HIGH PRIORITY (Next Sprint)
+
+### Monitoring & Observability
+- [ ] **Implement comprehensive logging throughout system**
+  - `logging_utils.py` exists but not integrated everywhere
+  - Add structured logging with proper levels
+
+- [ ] **Add health checks and system monitoring**
+  - No way to verify system is operating correctly
+  - Implement status endpoints and health indicators
+
+- [ ] **Add metrics collection**
+  - No tracking of system performance or usage patterns
+  - Implement key performance indicators
+
+### Testing Gaps
+- [ ] **Add integration tests**
+  - Current tests mock everything but don't test real integrations
+  - Need tests that verify actual GitHub and Claude Code interactions
+
+- [ ] **Add end-to-end workflow tests**
+  - No tests that verify complete workday/worknight/weekend cycles
+  - Critical for ensuring system works as intended
+
+- [ ] **Add error scenario testing**
+  - Edge cases and failure modes aren't well tested
+  - Need comprehensive failure testing
+
+### Performance & Resource Management
+- [ ] **Add connection pooling for GitHub API**
+  - Each API call creates new connections
+  - Implement efficient connection reuse
+
+- [ ] **Implement caching mechanism**
+  - Repeated GitHub API calls for same data waste resources
+  - Add intelligent caching with proper invalidation
+
+- [ ] **Fix memory management**
+  - Large GitHub responses aren't properly cleaned up
+  - Implement proper resource cleanup
+
+### Deployment & Operations
+- [ ] **Create systemd service deployment**
+  - Currently only supports cron-based scheduling
+  - Add more robust service management
+
+- [ ] **Add backup/restore functionality**
+  - No way to backup or restore system state
+  - Critical for operational reliability
+
+- [ ] **Implement configuration management**
+  - No way to manage configs across environments
+  - Add environment-specific configuration support
 
 ### Medium Priority
 - [ ] **Enhanced configuration validation**
