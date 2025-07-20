@@ -1,9 +1,9 @@
 # Orchestra system settings
 
 settings:
-  # Claude Code usage limits (adjust based on your subscription)
-  max_daily_tokens: 800000      # Leave buffer from actual limit
-  max_daily_requests: 8000      # Conservative request limit
+  # Claude Code session-based timing (5-hour sessions)
+  session_duration_hours: 5     # Claude session duration
+  final_window_minutes: 15      # Minutes before session end to maximize usage
   
   # Workday mode settings
   workday_max_repos: 3          # Limit repos processed in workday mode

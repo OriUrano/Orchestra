@@ -8,7 +8,7 @@ from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
 from github_integration import GitHubIntegration
-from usage_tracker import UsageTracker
+from usage_tracker import SessionTracker
 
 
 @dataclass
@@ -20,19 +20,31 @@ class RepoConfig:
 
 
 class BaseExecutor:
-    def __init__(self, usage_tracker: UsageTracker):
-        self.usage_tracker = usage_tracker
+    def __init__(self, session_tracker: SessionTracker):
+        self.session_tracker = session_tracker
     
-    def should_skip_due_to_usage(self) -> bool:
-        """Check if we should skip execution due to usage limits"""
-        status = self.usage_tracker.check_limits()
-        return status == "limit_reached"
+    def should_skip_due_to_session(self) -> bool:
+        """Check if we should skip execution due to session status"""
+        status = self.session_tracker.check_session_status()
+        return status == "session_expired"
     
-    def log_usage_status(self) -> None:
-        """Log current usage status"""
-        summary = self.usage_tracker.get_usage_summary()
-        status = self.usage_tracker.check_limits()
-        print(f"Usage status: {status} - {summary['total_tokens']} tokens, {summary['requests']} requests")
+    def should_maximize_usage(self) -> bool:
+        """Check if we should maximize usage (final 15 minutes of session)"""
+        status = self.session_tracker.check_session_status()
+        return status == "maximize_usage"
+    
+    def get_session_mode(self) -> str:
+        """Get current session mode for execution strategy"""
+        return self.session_tracker.check_session_status()
+    
+    def log_session_status(self) -> None:
+        """Log current session status"""
+        summary = self.session_tracker.get_session_summary()
+        status = self.session_tracker.check_session_status()
+        session_info = ""
+        if "session_remaining_minutes" in summary:
+            session_info = f" - {summary['session_remaining_minutes']} min remaining"
+        print(f"Session status: {status}{session_info}")
 
 
 class WorkdayExecutor(BaseExecutor):
@@ -43,17 +55,24 @@ class WorkdayExecutor(BaseExecutor):
     
     def execute(self, repos: List[RepoConfig]) -> Dict[str, Any]:
         """Execute workday tasks for all repositories"""
-        if self.should_skip_due_to_usage():
-            print("Skipping workday execution due to usage limits")
-            return {"status": "skipped", "reason": "usage_limit"}
+        session_mode = self.get_session_mode()
         
-        self.log_usage_status()
+        if session_mode == "session_expired":
+            print("Skipping workday execution - session expired")
+            return {"status": "skipped", "reason": "session_expired"}
+        
+        self.log_session_status()
         
         results = {}
         
-        # Limit repos in workday mode to preserve usage
-        high_priority_repos = [repo for repo in repos if repo.priority == "high"]
-        active_repos = high_priority_repos[:3]  # Max 3 repos in workday mode
+        # Adjust repo processing based on session mode
+        if session_mode == "maximize_usage":
+            print("Maximizing usage in final session window - processing all high priority repos")
+            active_repos = [repo for repo in repos if repo.priority == "high"]
+        else:
+            # Normal workday mode - limit repos for conservative approach
+            high_priority_repos = [repo for repo in repos if repo.priority == "high"]
+            active_repos = high_priority_repos[:3]  # Max 3 repos in workday mode
         
         for repo in active_repos:
             try:
@@ -387,23 +406,33 @@ class WorknightExecutor(BaseExecutor):
     Uses task scheduling for prioritized work management.
     """
     
-    def __init__(self, usage_tracker):
-        super().__init__(usage_tracker)
+    def __init__(self, session_tracker):
+        super().__init__(session_tracker)
         from task_scheduler import TaskScheduler
         self.task_scheduler = TaskScheduler()
     
     def execute(self, repos: List[RepoConfig]) -> Dict[str, Any]:
         """Execute worknight tasks for all repositories"""
-        if self.should_skip_due_to_usage():
-            print("Skipping worknight execution due to usage limits")
-            return {"status": "skipped", "reason": "usage_limit"}
+        session_mode = self.get_session_mode()
         
-        self.log_usage_status()
+        if session_mode == "session_expired":
+            print("Skipping worknight execution - session expired")
+            return {"status": "skipped", "reason": "session_expired"}
+        
+        self.log_session_status()
         
         results = {}
         
+        # Adjust processing based on session mode
+        if session_mode == "maximize_usage":
+            print("Maximizing usage in final session window - processing all repos with enhanced tasks")
+            active_repos = repos  # Process all repos
+        else:
+            # Normal worknight mode
+            active_repos = repos
+        
         # Process scheduled tasks first (highest priority)
-        for repo in repos:
+        for repo in active_repos:
             try:
                 repo_results = self._process_repo_worknight(repo)
                 results[repo.name] = repo_results
@@ -677,18 +706,18 @@ class WeekendExecutor(BaseExecutor):
     Active mode for strategic improvements and technical debt reduction.
     """
     
-    def __init__(self, usage_tracker):
-        super().__init__(usage_tracker)
+    def __init__(self, session_tracker):
+        super().__init__(session_tracker)
         from task_scheduler import TaskScheduler
         self.task_scheduler = TaskScheduler()
     
     def execute(self, repos: List[RepoConfig]) -> Dict[str, Any]:
         """Execute weekend comprehensive development for all repositories"""
-        if self.should_skip_due_to_usage():
-            print("Skipping weekend execution due to usage limits")
-            return {"status": "skipped", "reason": "usage_limit"}
+        if self.should_skip_due_to_session():
+            print("Skipping weekend execution - session expired")
+            return {"status": "skipped", "reason": "session_expired"}
         
-        self.log_usage_status()
+        self.log_session_status()
         
         results = {}
         
@@ -986,7 +1015,7 @@ Take time to do things properly and create lasting value for the project.""")
         return "\n\n".join(sections)
 
 
-def get_executor(mode: str, usage_tracker: UsageTracker) -> BaseExecutor:
+def get_executor(mode: str, session_tracker: SessionTracker) -> BaseExecutor:
     """Factory function to get the appropriate executor for a work mode"""
     executors = {
         "workday": WorkdayExecutor,
@@ -998,6 +1027,6 @@ def get_executor(mode: str, usage_tracker: UsageTracker) -> BaseExecutor:
     if not executor_class:
         raise ValueError(f"Unknown work mode: {mode}")
     
-    return executor_class(usage_tracker)
+    return executor_class(session_tracker)
 
 

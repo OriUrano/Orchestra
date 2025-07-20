@@ -17,7 +17,7 @@ from typing import List, Dict, Any
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from usage_tracker import UsageTracker
+from usage_tracker import SessionTracker
 from utils.time_utils import get_work_mode, should_run_automation
 from mode_executors import get_executor, RepoConfig
 from claude_code_sdk import query as claude_code
@@ -28,7 +28,7 @@ class Orchestra:
         self.config_path = config_path or os.path.join(os.path.dirname(__file__), "config")
         self.repos = self._load_repo_config()
         self.settings = self._load_settings()
-        self.usage_tracker = UsageTracker()
+        self.session_tracker = SessionTracker()
         
     def _load_repo_config(self) -> List[RepoConfig]:
         """Load repository configuration from repos.yaml"""
@@ -62,8 +62,8 @@ class Orchestra:
         settings_file = os.path.join(self.config_path, "settings.yaml")
         
         default_settings = {
-            'max_daily_tokens': 800000,
-            'max_daily_requests': 8000,
+            'session_duration_hours': 5,
+            'final_window_minutes': 15,
             'workday_max_repos': 3,
             'log_level': 'INFO',
             'claude_code_enabled': True
@@ -101,25 +101,25 @@ class Orchestra:
                 "timestamp": cycle_start.isoformat()
             }
         
-        # Check usage limits
-        usage_status = self.usage_tracker.check_limits(
-            daily_token_limit=self.settings['max_daily_tokens'],
-            daily_request_limit=self.settings['max_daily_requests']
-        )
+        # Check session status
+        session_status = self.session_tracker.check_session_status()
         
-        if usage_status == "limit_reached":
-            print("Usage limit reached, skipping cycle")
+        if session_status == "session_expired":
+            print("Session expired, skipping cycle")
             return {
                 "status": "skipped",
-                "reason": "usage_limit_reached",
-                "usage_summary": self.usage_tracker.get_usage_summary(),
+                "reason": "session_expired",
+                "session_summary": self.session_tracker.get_session_summary(),
                 "timestamp": cycle_start.isoformat()
             }
         
         # Determine current work mode
         work_mode = get_work_mode()
         print(f"Work mode: {work_mode}")
-        print(f"Usage status: {usage_status}")
+        print(f"Session status: {session_status}")
+        
+        if session_status == "maximize_usage":
+            print("🚀 MAXIMIZING USAGE: Final 15 minutes of session - processing more aggressively")
         
         if work_mode == "off":
             return {
@@ -130,7 +130,7 @@ class Orchestra:
         
         # Get the appropriate executor
         try:
-            executor = get_executor(work_mode, self.usage_tracker)
+            executor = get_executor(work_mode, self.session_tracker)
             
             # Execute tasks for the current mode
             execution_result = executor.execute(self.repos)
@@ -157,7 +157,7 @@ class Orchestra:
             return {
                 "status": "completed",
                 "work_mode": work_mode,
-                "usage_status": usage_status,
+                "session_status": session_status,
                 "execution_result": execution_result,
                 "duration_seconds": duration,
                 "timestamp": cycle_start.isoformat()
@@ -265,8 +265,8 @@ class Orchestra:
                 # Log result
                 if result['status'] in ['completed', 'error']:
                     print(f"Cycle result: {result['status']}")
-                    if result.get('usage_status'):
-                        print(f"Usage status: {result['usage_status']}")
+                    if result.get('session_status'):
+                        print(f"Session status: {result['session_status']}")
                 
                 # Wait for next hour
                 next_run = datetime.now().replace(minute=0, second=0, microsecond=0)

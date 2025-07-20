@@ -19,7 +19,7 @@ class TestOrchestra:
     def test_init_default_config_path(self):
         with patch('orchestra.Orchestra._load_repo_config'), \
              patch('orchestra.Orchestra._load_settings'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra()
             expected_path = os.path.join(os.path.dirname(os.path.abspath('orchestra.py')), "config")
@@ -31,7 +31,7 @@ class TestOrchestra:
         
         with patch('orchestra.Orchestra._load_repo_config'), \
              patch('orchestra.Orchestra._load_settings'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=custom_path)
             assert orchestra.config_path == custom_path
@@ -40,14 +40,14 @@ class TestOrchestra:
         config_path = temp_dir
         
         with patch('orchestra.Orchestra._load_settings'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=config_path)
             assert orchestra.repos == []
     
     def test_load_repo_config_success(self, config_dir):
         with patch('orchestra.Orchestra._load_settings'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=config_dir)
             
@@ -65,7 +65,7 @@ class TestOrchestra:
             f.write("invalid: yaml: content: [")
         
         with patch('orchestra.Orchestra._load_settings'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=str(config_path))
             assert orchestra.repos == []
@@ -74,18 +74,18 @@ class TestOrchestra:
         config_path = temp_dir
         
         with patch('orchestra.Orchestra._load_repo_config'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=config_path)
             
             # Should use default settings
-            assert orchestra.settings['max_daily_tokens'] == 800000
-            assert orchestra.settings['max_daily_requests'] == 8000
+            assert orchestra.settings['session_duration_hours'] == 5
+            assert orchestra.settings['final_window_minutes'] == 15
             assert orchestra.settings['claude_code_enabled'] == True
     
     def test_load_settings_success(self, config_dir):
         with patch('orchestra.Orchestra._load_repo_config'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=config_dir)
             
@@ -102,12 +102,12 @@ class TestOrchestra:
             f.write("invalid: yaml: [content")
         
         with patch('orchestra.Orchestra._load_repo_config'), \
-             patch('orchestra.UsageTracker'):
+             patch('orchestra.SessionTracker'):
             
             orchestra = Orchestra(config_path=str(config_path))
             
             # Should use default settings
-            assert orchestra.settings['max_daily_tokens'] == 800000
+            assert orchestra.settings['session_duration_hours'] == 5
 
 
 class TestOrchestraCycle:
@@ -115,12 +115,12 @@ class TestOrchestraCycle:
     
     @pytest.fixture
     def mock_orchestra(self, config_dir):
-        with patch('orchestra.UsageTracker') as mock_tracker_class:
+        with patch('orchestra.SessionTracker') as mock_tracker_class:
             mock_tracker = Mock()
             mock_tracker_class.return_value = mock_tracker
             
             orchestra = Orchestra(config_path=config_dir)
-            orchestra.usage_tracker = mock_tracker
+            orchestra.session_tracker = mock_tracker
             
             return orchestra, mock_tracker
     
@@ -139,21 +139,21 @@ class TestOrchestraCycle:
     def test_run_cycle_usage_limit_reached(self, mock_should_run, mock_orchestra):
         orchestra, mock_tracker = mock_orchestra
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "limit_reached"
-        mock_tracker.get_usage_summary.return_value = {"total_tokens": 800000, "requests": 8000}
+        mock_tracker.check_session_status.return_value = "session_expired"
+        mock_tracker.get_session_summary.return_value = {"total_tokens": 800000, "requests": 8000}
         
         result = orchestra.run_cycle()
         
         assert result["status"] == "skipped"
-        assert result["reason"] == "usage_limit_reached"
-        assert "usage_summary" in result
+        assert result["reason"] == "session_expired"
+        assert "session_summary" in result
     
     @patch('orchestra.should_run_automation')
     @patch('orchestra.get_work_mode')
     def test_run_cycle_off_hours(self, mock_get_mode, mock_should_run, mock_orchestra):
         orchestra, mock_tracker = mock_orchestra
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "normal"
+        mock_tracker.check_session_status.return_value = "normal"
         mock_get_mode.return_value = "off"
         
         result = orchestra.run_cycle()
@@ -167,7 +167,7 @@ class TestOrchestraCycle:
     def test_run_cycle_success_no_claude(self, mock_get_executor, mock_get_mode, mock_should_run, mock_orchestra):
         orchestra, mock_tracker = mock_orchestra
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "normal"
+        mock_tracker.check_session_status.return_value = "normal"
         mock_get_mode.return_value = "workday"
         
         # Mock executor
@@ -191,7 +191,7 @@ class TestOrchestraCycle:
     def test_run_cycle_executor_exception(self, mock_get_executor, mock_get_mode, mock_should_run, mock_orchestra):
         orchestra, mock_tracker = mock_orchestra
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "normal"
+        mock_tracker.check_session_status.return_value = "normal"
         mock_get_mode.return_value = "workday"
         
         # Mock executor that raises exception
@@ -209,12 +209,12 @@ class TestOrchestraClaudeIntegration:
     
     @pytest.fixture
     def mock_orchestra_with_repos(self, config_dir):
-        with patch('orchestra.UsageTracker') as mock_tracker_class:
+        with patch('orchestra.SessionTracker') as mock_tracker_class:
             mock_tracker = Mock()
             mock_tracker_class.return_value = mock_tracker
             
             orchestra = Orchestra(config_path=config_dir)
-            orchestra.usage_tracker = mock_tracker
+            orchestra.session_tracker = mock_tracker
             
             # Mock repos to match config
             orchestra.repos = [
@@ -326,7 +326,7 @@ class TestOrchestraClaudeIntegration:
                                                       mock_get_mode, mock_should_run, mock_orchestra_with_repos):
         orchestra, mock_tracker = mock_orchestra_with_repos
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "normal"
+        mock_tracker.check_session_status.return_value = "normal"
         mock_get_mode.return_value = "workday"
         mock_claude_code.return_value = "Claude response"
         
@@ -358,7 +358,7 @@ class TestOrchestraClaudeIntegration:
                                                         mock_get_mode, mock_should_run, mock_orchestra_with_repos):
         orchestra, mock_tracker = mock_orchestra_with_repos
         mock_should_run.return_value = True
-        mock_tracker.check_limits.return_value = "normal"
+        mock_tracker.check_session_status.return_value = "normal"
         mock_get_mode.return_value = "worknight"
         mock_claude_code.return_value = "Claude worknight response"
         
@@ -388,12 +388,12 @@ class TestOrchestraDaemonMode:
     
     @pytest.fixture
     def mock_orchestra_daemon(self, config_dir):
-        with patch('orchestra.UsageTracker') as mock_tracker_class:
+        with patch('orchestra.SessionTracker') as mock_tracker_class:
             mock_tracker = Mock()
             mock_tracker_class.return_value = mock_tracker
             
             orchestra = Orchestra(config_path=config_dir)
-            orchestra.usage_tracker = mock_tracker
+            orchestra.session_tracker = mock_tracker
             
             return orchestra, mock_tracker
     
@@ -493,7 +493,7 @@ class TestOrchestraEdgeCases:
     """Test Orchestra edge cases and error scenarios."""
     
     def test_process_workday_skip_non_ready_repos(self, config_dir):
-        with patch('orchestra.UsageTracker'):
+        with patch('orchestra.SessionTracker'):
             orchestra = Orchestra(config_path=config_dir)
             
             execution_result = {
@@ -526,7 +526,7 @@ class TestOrchestraEdgeCases:
                 assert "ready-repo_review" in result
     
     def test_process_worknight_skip_non_ready_repos(self, config_dir):
-        with patch('orchestra.UsageTracker'):
+        with patch('orchestra.SessionTracker'):
             orchestra = Orchestra(config_path=config_dir)
             
             execution_result = {
@@ -554,7 +554,7 @@ class TestOrchestraEdgeCases:
                 assert "ready-repo" in result
     
     def test_repo_config_not_found_in_claude_processing(self, config_dir):
-        with patch('orchestra.UsageTracker'):
+        with patch('orchestra.SessionTracker'):
             orchestra = Orchestra(config_path=config_dir)
             orchestra.repos = []  # Empty repos list
             

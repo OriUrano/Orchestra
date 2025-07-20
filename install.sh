@@ -5,7 +5,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ORCHESTRA_PATH="$SCRIPT_DIR/orchestra.py"
-CRON_JOB="0 * * * * /usr/bin/python3 $ORCHESTRA_PATH >/dev/null 2>&1"
 
 echo "🎼 Installing Orchestra..."
 
@@ -65,19 +64,13 @@ else
     exit 1
 fi
 
-# Setup cron job
-echo "Setting up cron job..."
-
-# Check if cron job already exists
+# Remove any existing cron jobs for Orchestra
+echo "Cleaning up any existing cron jobs..."
 if crontab -l 2>/dev/null | grep -q "$ORCHESTRA_PATH"; then
-    echo "⚠️  Cron job already exists. Removing old entry..."
+    echo "⚠️  Removing old cron job..."
     (crontab -l 2>/dev/null | grep -v "$ORCHESTRA_PATH") | crontab -
+    echo "✅ Old cron job removed"
 fi
-
-# Add new cron job
-(crontab -l 2>/dev/null; echo "$CRON_JOB") | crontab -
-
-echo "✅ Cron job installed: $CRON_JOB"
 
 # Create logs directory
 mkdir -p "$SCRIPT_DIR/logs"
@@ -89,10 +82,15 @@ echo "Next steps:"
 echo "1. Configure your repositories in config/repos.yaml"
 echo "2. Adjust settings in config/settings.yaml if needed"
 echo "3. Test manually: python3 orchestra.py --run-once"
-echo "4. Orchestra will now run automatically every hour"
+echo "4. Run in daemon mode: python3 orchestra.py --daemon"
+echo ""
+echo "Usage modes:"
+echo "- Single run: python3 orchestra.py --run-once"
+echo "- Daemon mode: python3 orchestra.py --daemon (runs continuously with hourly cycles)"
+echo "- Test mode: python3 orchestra.py --test-mode --run-once"
 echo ""
 echo "To uninstall:"
-echo "- Remove cron job: crontab -e (delete the Orchestra line)"
+echo "- Stop daemon process if running"
 echo "- Remove this directory: rm -rf $SCRIPT_DIR"
 echo ""
 echo "Logs will be available in: $SCRIPT_DIR/logs/"

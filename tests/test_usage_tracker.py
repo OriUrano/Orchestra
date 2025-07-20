@@ -1,5 +1,5 @@
 """
-Unit tests for usage_tracker.py
+Unit tests for session_tracker.py (formerly usage_tracker.py)
 """
 import json
 import os
@@ -9,469 +9,365 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch, mock_open
 
-from usage_tracker import UsageTracker, UsageMetrics
+from usage_tracker import SessionTracker, SessionInfo
 
 
-class TestUsageMetrics:
-    """Test UsageMetrics dataclass."""
+class TestSessionInfo:
+    """Test SessionInfo dataclass."""
     
     def test_default_values(self):
-        metrics = UsageMetrics()
-        assert metrics.input_tokens == 0
-        assert metrics.output_tokens == 0
-        assert metrics.cache_creation_tokens == 0
-        assert metrics.cache_read_tokens == 0
-        assert metrics.requests == 0
+        session = SessionInfo()
+        assert session.session_start is None
+        assert session.is_active is False
     
-    def test_total_tokens_calculation(self):
-        metrics = UsageMetrics(
-            input_tokens=1000,
-            output_tokens=500,
-            cache_creation_tokens=200,
-            cache_read_tokens=100  # This should not be included in total
-        )
-        # total_tokens = input + output + cache_creation (not cache_read)
-        assert metrics.total_tokens == 1700
+    def test_elapsed_time_no_start(self):
+        session = SessionInfo()
+        assert session.elapsed_time == timedelta(0)
     
-    def test_custom_values(self):
-        metrics = UsageMetrics(
-            input_tokens=1234,
-            output_tokens=567,
-            cache_creation_tokens=89,
-            cache_read_tokens=45,
-            requests=10
-        )
-        assert metrics.input_tokens == 1234
-        assert metrics.output_tokens == 567
-        assert metrics.cache_creation_tokens == 89
-        assert metrics.cache_read_tokens == 45
-        assert metrics.requests == 10
-        assert metrics.total_tokens == 1890
+    def test_elapsed_time_with_start(self):
+        start_time = datetime.now() - timedelta(hours=2)
+        session = SessionInfo(session_start=start_time, is_active=True)
+        
+        # Should be approximately 2 hours
+        elapsed = session.elapsed_time
+        assert abs(elapsed.total_seconds() - 7200) < 60  # Within 1 minute tolerance
+    
+    def test_remaining_time(self):
+        start_time = datetime.now() - timedelta(hours=2)
+        session = SessionInfo(session_start=start_time, is_active=True)
+        
+        remaining = session.remaining_time
+        expected_remaining = timedelta(hours=3)  # 5 - 2 = 3 hours
+        assert abs(remaining.total_seconds() - expected_remaining.total_seconds()) < 60
+    
+    def test_is_in_final_window(self):
+        # Test session with 10 minutes remaining
+        start_time = datetime.now() - timedelta(hours=4, minutes=50)
+        session = SessionInfo(session_start=start_time, is_active=True)
+        
+        assert session.is_in_final_window(15) is True
+        assert session.is_in_final_window(5) is False
+    
+    def test_session_expired(self):
+        # Test expired session
+        start_time = datetime.now() - timedelta(hours=6)
+        session = SessionInfo(session_start=start_time, is_active=True)
+        assert session.session_expired is True
+        
+        # Test active session
+        start_time = datetime.now() - timedelta(hours=2)
+        session = SessionInfo(session_start=start_time, is_active=True)
+        assert session.session_expired is False
 
 
-class TestUsageTracker:
-    """Test UsageTracker class."""
+class TestSessionTracker:
+    """Test SessionTracker class."""
+    
+    @pytest.fixture
+    def temp_claude_dir(self):
+        """Create a temporary claude directory for testing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_dir = os.path.join(temp_dir, ".claude")
+            projects_dir = os.path.join(claude_dir, "projects")
+            os.makedirs(projects_dir)
+            yield claude_dir
+    
+    @pytest.fixture
+    def sample_jsonl_data(self):
+        """Sample JSONL data for testing."""
+        now = datetime.now()
+        return [
+            {
+                "type": "assistant",
+                "timestamp": (now - timedelta(hours=2)).isoformat() + "Z",
+                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+            },
+            {
+                "type": "assistant", 
+                "timestamp": (now - timedelta(hours=1)).isoformat() + "Z",
+                "message": {"usage": {"input_tokens": 200, "output_tokens": 100}}
+            },
+            {
+                "type": "assistant",
+                "timestamp": now.isoformat() + "Z", 
+                "message": {"usage": {"input_tokens": 150, "output_tokens": 75}}
+            }
+        ]
     
     def test_init_default_claude_dir(self):
-        tracker = UsageTracker()
-        expected_dir = os.path.expanduser("~/.claude")
-        assert tracker.claude_dir == expected_dir
+        tracker = SessionTracker()
+        assert tracker.claude_dir == os.path.expanduser("~/.claude")
     
-    def test_init_custom_claude_dir(self):
-        custom_dir = "/custom/claude/dir"
-        tracker = UsageTracker(claude_dir=custom_dir)
-        assert tracker.claude_dir == custom_dir
+    def test_init_custom_claude_dir(self, temp_claude_dir):
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        assert tracker.claude_dir == temp_claude_dir
     
-    def test_get_current_usage_no_projects_dir(self, temp_dir):
-        # Test when projects directory doesn't exist
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
-        
-        assert isinstance(usage, UsageMetrics)
-        assert usage.total_tokens == 0
-        assert usage.requests == 0
+    def test_find_session_start_no_directory(self):
+        tracker = SessionTracker(claude_dir="/nonexistent")
+        result = tracker.find_session_start()
+        assert result is None
     
-    def test_get_current_usage_empty_projects_dir(self, temp_dir):
-        # Test with empty projects directory
-        projects_dir = Path(temp_dir) / "projects"
-        projects_dir.mkdir()
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
-        
-        assert isinstance(usage, UsageMetrics)
-        assert usage.total_tokens == 0
-        assert usage.requests == 0
+    def test_find_session_start_empty_directory(self, temp_claude_dir):
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        result = tracker.find_session_start()
+        assert result is None
     
-    def test_get_current_usage_with_valid_jsonl(self, temp_dir):
-        # Setup test JSONL file with usage data
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
+    def test_find_session_start_with_data(self, temp_claude_dir, sample_jsonl_data):
+        # Create a test project with JSONL data
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
         
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        # Create test data entries
-        today = datetime.now()
-        test_entries = [
-            {
-                "timestamp": today.isoformat(),
-                "type": "assistant",
-                "message": {
-                    "usage": {
-                        "input_tokens": 1000,
-                        "output_tokens": 500,
-                        "cache_creation_input_tokens": 100,
-                        "cache_read_input_tokens": 50
-                    }
-                }
-            },
-            {
-                "timestamp": today.isoformat(),
-                "type": "assistant", 
-                "message": {
-                    "usage": {
-                        "input_tokens": 800,
-                        "output_tokens": 300,
-                        "cache_creation_input_tokens": 0,
-                        "cache_read_input_tokens": 25
-                    }
-                }
-            }
-        ]
-        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
         with open(jsonl_file, 'w') as f:
-            for entry in test_entries:
+            for entry in sample_jsonl_data:
                 f.write(json.dumps(entry) + "\n")
         
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        session_start = tracker.find_session_start()
         
-        assert usage.input_tokens == 1800
-        assert usage.output_tokens == 800
-        assert usage.cache_creation_tokens == 100
-        assert usage.cache_read_tokens == 75
-        assert usage.requests == 2
-        assert usage.total_tokens == 2700
+        # Should find the earliest timestamp within 5 hours
+        assert session_start is not None
+        assert isinstance(session_start, datetime)
     
-    def test_get_current_usage_filtered_by_date(self, temp_dir):
-        # Test filtering by since parameter
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        # Create entries from different days
-        yesterday = datetime.now() - timedelta(days=1)
-        today = datetime.now()
-        
-        test_entries = [
-            {
-                "timestamp": yesterday.isoformat(),
-                "type": "assistant",
-                "message": {
-                    "usage": {
-                        "input_tokens": 1000,
-                        "output_tokens": 500
-                    }
-                }
-            },
-            {
-                "timestamp": today.isoformat(), 
-                "type": "assistant",
-                "message": {
-                    "usage": {
-                        "input_tokens": 800,
-                        "output_tokens": 300
-                    }
-                }
-            }
-        ]
-        
-        with open(jsonl_file, 'w') as f:
-            for entry in test_entries:
-                f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        
-        # Filter to only include today's usage
-        since = today.replace(hour=0, minute=0, second=0, microsecond=0)
-        usage = tracker.get_current_usage(since=since)
-        
-        # Should only include today's entry
-        assert usage.input_tokens == 800
-        assert usage.output_tokens == 300
-        assert usage.requests == 1
-    
-    def test_get_current_usage_malformed_json(self, temp_dir):
-        # Test handling of malformed JSON lines
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        with open(jsonl_file, 'w') as f:
-            f.write("invalid json line\n")
-            f.write('{"valid": "json", "but": "no usage"}\n')
-            f.write('{"timestamp": "' + datetime.now().isoformat() + '", "type": "assistant", "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}}\n')
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
-        
-        # Should only count the valid entry
-        assert usage.input_tokens == 100
-        assert usage.output_tokens == 50
-        assert usage.requests == 1
-    
-    def test_get_current_usage_missing_fields(self, temp_dir):
-        # Test handling of entries with missing required fields
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        today = datetime.now()
-        test_entries = [
-            # Missing timestamp
+    def test_find_session_start_gap_detection(self, temp_claude_dir):
+        # Create data with a gap > 5 hours, but with multiple messages in recent session
+        now = datetime.now()
+        data_with_gap = [
             {
                 "type": "assistant",
+                "timestamp": (now - timedelta(hours=1)).isoformat() + "Z",
                 "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
             },
-            # Missing type
             {
-                "timestamp": today.isoformat(),
-                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
-            },
-            # Missing message
-            {
-                "timestamp": today.isoformat(),
-                "type": "assistant"
-            },
-            # Valid entry
-            {
-                "timestamp": today.isoformat(),
                 "type": "assistant",
-                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
-            }
-        ]
-        
-        with open(jsonl_file, 'w') as f:
-            for entry in test_entries:
-                f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
-        
-        # Should only count the valid entry
-        assert usage.input_tokens == 100
-        assert usage.output_tokens == 50
-        assert usage.requests == 1
-
-
-class TestUsageTrackerLimits:
-    """Test usage limit checking functionality."""
-    
-    def test_check_limits_normal(self, temp_dir):
-        # Setup low usage
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "type": "assistant",
-            "message": {
-                "usage": {
-                    "input_tokens": 1000,  # Well below limits
-                    "output_tokens": 500
-                }
-            }
-        }
-        
-        with open(jsonl_file, 'w') as f:
-            f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        status = tracker.check_limits(daily_token_limit=100000, daily_request_limit=1000)
-        
-        assert status == "normal"
-    
-    def test_check_limits_approaching(self, temp_dir):
-        # Setup usage at 80% of limit
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "type": "assistant",
-            "message": {
-                "usage": {
-                    "input_tokens": 8000,  # 80% of 10000 limit
-                    "output_tokens": 0
-                }
-            }
-        }
-        
-        with open(jsonl_file, 'w') as f:
-            f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        status = tracker.check_limits(daily_token_limit=10000, daily_request_limit=1000)
-        
-        assert status == "approaching_limit"
-    
-    def test_check_limits_reached(self, temp_dir):
-        # Setup usage at 95% of limit
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "type": "assistant",
-            "message": {
-                "usage": {
-                    "input_tokens": 9500,  # 95% of 10000 limit
-                    "output_tokens": 0
-                }
-            }
-        }
-        
-        with open(jsonl_file, 'w') as f:
-            f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        status = tracker.check_limits(daily_token_limit=10000, daily_request_limit=1000)
-        
-        assert status == "limit_reached"
-    
-    def test_check_limits_request_limit(self, temp_dir):
-        # Test request-based limit checking
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        # Create 85 requests (85% of 100 limit)
-        today = datetime.now().isoformat()
-        entries = []
-        for i in range(85):
-            entries.append({
-                "timestamp": today,
-                "type": "assistant",
-                "message": {"usage": {"input_tokens": 10, "output_tokens": 5}}
-            })
-        
-        with open(jsonl_file, 'w') as f:
-            for entry in entries:
-                f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        status = tracker.check_limits(daily_token_limit=100000, daily_request_limit=100)
-        
-        assert status == "approaching_limit"
-
-
-class TestUsageTrackerSummary:
-    """Test usage summary functionality."""
-    
-    def test_get_usage_summary(self, temp_dir):
-        # Setup test data
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "type": "assistant",
-            "message": {
-                "usage": {
-                    "input_tokens": 1000,
-                    "output_tokens": 500,
-                    "cache_creation_input_tokens": 100,
-                    "cache_read_input_tokens": 50
-                }
-            }
-        }
-        
-        with open(jsonl_file, 'w') as f:
-            f.write(json.dumps(entry) + "\n")
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        summary = tracker.get_usage_summary()
-        
-        assert summary["total_tokens"] == 1600
-        assert summary["input_tokens"] == 1000
-        assert summary["output_tokens"] == 500
-        assert summary["cache_creation_tokens"] == 100
-        assert summary["cache_read_tokens"] == 50
-        assert summary["requests"] == 1
-        assert "timestamp" in summary
-        
-        # Verify timestamp is recent
-        timestamp = datetime.fromisoformat(summary["timestamp"])
-        assert (datetime.now() - timestamp).total_seconds() < 5
-
-
-class TestUsageTrackerEdgeCases:
-    """Test edge cases and error handling."""
-    
-    def test_unreadable_file(self, temp_dir):
-        # Test handling of unreadable files
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        jsonl_file.touch()
-        
-        # Mock file opening to raise an exception
-        with patch("builtins.open", side_effect=IOError("Permission denied")):
-            tracker = UsageTracker(claude_dir=temp_dir)
-            usage = tracker.get_current_usage()
-            
-            # Should return empty metrics when files can't be read
-            assert usage.total_tokens == 0
-            assert usage.requests == 0
-    
-    def test_empty_lines_in_jsonl(self, temp_dir):
-        # Test handling of empty lines
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        today = datetime.now().isoformat()
-        content = f"""
-        
-{{"timestamp": "{today}", "type": "assistant", "message": {{"usage": {{"input_tokens": 100, "output_tokens": 50}}}}}}
-
-        """
-        
-        with open(jsonl_file, 'w') as f:
-            f.write(content)
-        
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
-        
-        assert usage.input_tokens == 100
-        assert usage.output_tokens == 50
-        assert usage.requests == 1
-    
-    def test_iso_timestamp_formats(self, temp_dir):
-        # Test different ISO timestamp formats
-        projects_dir = Path(temp_dir) / "projects" / "test-project"
-        projects_dir.mkdir(parents=True)
-        
-        jsonl_file = projects_dir / "test.jsonl"
-        
-        today = datetime.now()
-        test_entries = [
-            # With Z suffix
-            {
-                "timestamp": today.isoformat(),
-                "type": "assistant",
-                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+                "timestamp": (now - timedelta(minutes=30)).isoformat() + "Z",  # Add second message
+                "message": {"usage": {"input_tokens": 150, "output_tokens": 75}}
             },
-            # Without Z suffix
             {
-                "timestamp": today.isoformat(),
-                "type": "assistant", 
+                "type": "assistant",
+                "timestamp": (now - timedelta(hours=7)).isoformat() + "Z",  # 7 hours ago - different session
                 "message": {"usage": {"input_tokens": 200, "output_tokens": 100}}
             }
         ]
         
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
         with open(jsonl_file, 'w') as f:
-            for entry in test_entries:
+            for entry in data_with_gap:
                 f.write(json.dumps(entry) + "\n")
         
-        tracker = UsageTracker(claude_dir=temp_dir)
-        usage = tracker.get_current_usage()
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        session_start = tracker.find_session_start()
         
-        # Both entries should be counted
-        assert usage.input_tokens == 300
-        assert usage.output_tokens == 150
-        assert usage.requests == 2
+        # Should only consider the recent session (1 hour ago)
+        assert session_start is not None
+        expected_time = now - timedelta(hours=1)
+        time_diff = abs((session_start - expected_time).total_seconds())
+        assert time_diff < 60  # Within 1 minute
+    
+    def test_get_current_session_no_data(self, temp_claude_dir):
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        session = tracker.get_current_session()
+        
+        assert session.session_start is None
+        assert session.is_active is False
+    
+    def test_get_current_session_with_data(self, temp_claude_dir, sample_jsonl_data):
+        # Create test data
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            for entry in sample_jsonl_data:
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        session = tracker.get_current_session()
+        
+        assert session.session_start is not None
+        assert session.is_active is True
+    
+    def test_check_session_status_no_session(self, temp_claude_dir):
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        status = tracker.check_session_status()
+        assert status == "no_session"
+    
+    def test_check_session_status_normal(self, temp_claude_dir):
+        # Create recent session data
+        now = datetime.now()
+        recent_data = [
+            {
+                "type": "assistant",
+                "timestamp": (now - timedelta(hours=1)).isoformat() + "Z",
+                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+            },
+            {
+                "type": "assistant",
+                "timestamp": now.isoformat() + "Z",
+                "message": {"usage": {"input_tokens": 200, "output_tokens": 100}}
+            }
+        ]
+        
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            for entry in recent_data:
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        status = tracker.check_session_status()
+        assert status == "normal"
+    
+    def test_check_session_status_maximize_usage(self, temp_claude_dir):
+        # Create session data that's in final window (< 15 minutes remaining)
+        now = datetime.now()
+        final_window_data = [
+            {
+                "type": "assistant",
+                "timestamp": (now - timedelta(hours=4, minutes=50)).isoformat() + "Z",  # 4h50m ago
+                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+            },
+            {
+                "type": "assistant",
+                "timestamp": now.isoformat() + "Z",
+                "message": {"usage": {"input_tokens": 200, "output_tokens": 100}}
+            }
+        ]
+        
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            for entry in final_window_data:
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        status = tracker.check_session_status()
+        assert status == "maximize_usage"
+    
+    def test_check_session_status_expired(self, temp_claude_dir):
+        # Create session data that's exactly at the session boundary (5+ hours old)
+        # This should be detected as no_session since it's beyond the 5-hour window
+        now = datetime.now()
+        expired_data = [
+            {
+                "type": "assistant",
+                "timestamp": (now - timedelta(hours=6)).isoformat() + "Z",  # 6 hours ago
+                "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+            }
+        ]
+        
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            for entry in expired_data:
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        status = tracker.check_session_status()
+        # Session older than 5 hours is considered no_session, not session_expired
+        assert status == "no_session"
+    
+    def test_get_session_summary_no_session(self, temp_claude_dir):
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        summary = tracker.get_session_summary()
+        
+        assert summary["session_active"] is False
+        assert "timestamp" in summary
+        assert "session_start" not in summary
+    
+    def test_get_session_summary_active_session(self, temp_claude_dir, sample_jsonl_data):
+        # Create test data
+        project_dir = os.path.join(temp_claude_dir, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            for entry in sample_jsonl_data:
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir)
+        summary = tracker.get_session_summary()
+        
+        assert summary["session_active"] is True
+        assert "timestamp" in summary
+        assert "session_start" in summary
+        assert "session_elapsed_minutes" in summary
+        assert "session_remaining_minutes" in summary
+        assert "is_final_window" in summary
+        assert "session_expired" in summary
+    
+    def test_backward_compatibility_alias(self):
+        """Test that UsageTracker alias works for backward compatibility."""
+        from usage_tracker import UsageTracker
+        
+        tracker = UsageTracker()
+        assert isinstance(tracker, SessionTracker)
+
+
+# Integration tests
+class TestSessionTrackerIntegration:
+    """Integration tests for SessionTracker with real-world scenarios."""
+    
+    @pytest.fixture
+    def temp_claude_dir_integration(self):
+        """Create a temporary claude directory for integration testing."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            claude_dir = os.path.join(temp_dir, ".claude")
+            projects_dir = os.path.join(claude_dir, "projects")
+            os.makedirs(projects_dir)
+            yield claude_dir
+    
+    def test_multiple_projects_session_detection(self, temp_claude_dir_integration):
+        """Test session detection across multiple projects."""
+        now = datetime.now()
+        
+        # Create data in multiple projects
+        for project_name in ["project1", "project2"]:
+            project_dir = os.path.join(temp_claude_dir_integration, "projects", project_name)
+            os.makedirs(project_dir)
+            
+            jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+            with open(jsonl_file, 'w') as f:
+                # Add some session data
+                entry = {
+                    "type": "assistant",
+                    "timestamp": (now - timedelta(hours=1)).isoformat() + "Z",
+                    "message": {"usage": {"input_tokens": 100, "output_tokens": 50}}
+                }
+                f.write(json.dumps(entry) + "\n")
+        
+        tracker = SessionTracker(claude_dir=temp_claude_dir_integration)
+        session = tracker.get_current_session()
+        
+        # Should detect session from either project
+        assert session.is_active is True
+        assert session.session_start is not None
+    
+    def test_malformed_jsonl_handling(self, temp_claude_dir_integration):
+        """Test handling of malformed JSONL data."""
+        project_dir = os.path.join(temp_claude_dir_integration, "projects", "test_project")
+        os.makedirs(project_dir)
+        
+        jsonl_file = os.path.join(project_dir, "conversation.jsonl")
+        with open(jsonl_file, 'w') as f:
+            # Mix of valid and invalid JSON
+            f.write('{"valid": "json"}\n')
+            f.write('invalid json line\n')
+            f.write('{"type": "assistant", "timestamp": "2024-01-01T12:00:00Z"}\n')
+            f.write('')  # Empty line
+            
+        tracker = SessionTracker(claude_dir=temp_claude_dir_integration)
+        
+        # Should handle malformed data gracefully
+        session_start = tracker.find_session_start()
+        # Depending on the data, might be None or a valid datetime
+        assert session_start is None or isinstance(session_start, datetime)

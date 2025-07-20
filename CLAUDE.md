@@ -113,8 +113,8 @@ Orchestra uses `claude_code_sdk` to make API calls, with prompts tailored to eac
 ### GitHub CLI (`gh`)
 All GitHub operations go through the `gh` CLI tool rather than direct API calls, leveraging existing authentication and avoiding token management.
 
-### Cron Integration
-The system is designed to run via cron hourly, with built-in mode detection to determine if execution should proceed.
+### Daemon Operation
+The system runs as a daemon process with built-in hourly scheduling and mode detection to determine if execution should proceed.
 
 ## Prompt Engineering Strategy
 

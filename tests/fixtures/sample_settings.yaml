@@ -1,6 +1,6 @@
 settings:
-  max_daily_tokens: 100000
-  max_daily_requests: 1000
+  session_duration_hours: 5
+  final_window_minutes: 15
   workday_max_repos: 2
   log_level: INFO
   claude_code_enabled: true
