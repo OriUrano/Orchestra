@@ -93,7 +93,6 @@ test-results/
 .claude/
 claude_state.json
 usage_tracking.json
-todo.md
 
 # Orchestra specific
 orchestra_state.json
